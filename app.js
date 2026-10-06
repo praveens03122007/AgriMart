@@ -375,16 +375,185 @@ const PRODUCTS = [
   }
 ];
 
+/**
+ * Converts the UI land-area input into acres.
+ *
+ * Keeping this calculation pure makes it deterministic and easy to unit test
+ * without creating DOM nodes or mocking browser APIs.
+ */
+function convertLandToAcres(landArea, unit) {
+  const area = Number(landArea);
+  if (!Number.isFinite(area) || area < 0) {
+    throw new Error('landArea must be a non-negative number');
+  }
+
+  if (unit === 'Bigha') return area * 0.4;
+  if (unit === 'Hectares') return area * 2.47;
+  return area;
+}
+
+/**
+ * Calculates the order totals used by checkout.
+ *
+ * `mrp` is the displayed pre-discount price and `price` is the certified
+ * AgriMart selling price after the product-level subsidy/discount. The
+ * optional village pool discount is then applied to the discounted subtotal.
+ *
+ * This function deliberately has no DOM dependencies so checkout arithmetic
+ * can be covered by unit tests independently from the browser UI.
+ */
+function calculateOrderTotals(cart, isVillagePool) {
+  if (!Array.isArray(cart)) {
+    throw new Error('cart must be an array');
+  }
+
+  let subtotal = 0;
+  let totalSubsidy = 0;
+
+  cart.forEach(item => {
+    const qty = Number(item.qty);
+    const mrp = Number(item.mrp);
+    const price = Number(item.price);
+
+    if (!Number.isFinite(qty) || qty < 0 ||
+        !Number.isFinite(mrp) || mrp < 0 ||
+        !Number.isFinite(price) || price < 0) {
+      throw new Error('cart contains an invalid item');
+    }
+
+    subtotal += mrp * qty;
+    totalSubsidy += (mrp - price) * qty;
+  });
+
+  const discountedSubtotal = subtotal - totalSubsidy;
+  const villageDiscount = isVillagePool
+    ? Math.round(discountedSubtotal * 0.18)
+    : 0;
+
+  return {
+    subtotal,
+    totalSubsidy,
+    villageDiscount,
+    finalPayable: Math.max(0, discountedSubtotal - villageDiscount)
+  };
+}
+
+/**
+ * Returns the diagnostic metadata for a supported sample.
+ * Unknown types intentionally fall back to the default rice-blast sample,
+ * matching the UI's existing behavior.
+ */
+function getDiseaseInfo(type) {
+  const diseaseData = {
+    rice_blast: {
+      crop: 'Rice / Paddy',
+      disease: 'Rice Leaf Blast (Magnaporthe oryzae)',
+      severity: 'Moderate - High Spreading Risk',
+      symptoms: 'Spindle-shaped lesions with grayish center on leaves.',
+      solution: 'Tricyclazole 75% WP Spray',
+      productId: 'pest-fungi-1',
+      price: 420
+    },
+    cotton_bollworm: {
+      crop: 'Cotton',
+      disease: 'Pink Bollworm Infestation',
+      severity: 'High Severity',
+      symptoms: 'Bores into cotton bolls causing premature drop.',
+      solution: 'Bio-Neem Organic 10,000 PPM Spray',
+      productId: 'pest-neem-1',
+      price: 340
+    },
+    wheat_rust: {
+      crop: 'Wheat',
+      disease: 'Puccinia Yellow Rust',
+      severity: 'Low - Early Stage',
+      symptoms: 'Yellow stripe pustules on leaf surface.',
+      solution: 'Propiconazole 25% EC Fungicide',
+      productId: 'pest-fungi-1',
+      price: 420
+    },
+    tomato_blight: {
+      crop: 'Tomato',
+      disease: 'Early Blight (Alternaria solani)',
+      severity: 'Moderate',
+      symptoms: 'Concentric rings / target spots on lower leaves.',
+      solution: 'Mancozeb 75% WP Bio Shield',
+      productId: 'pest-neem-1',
+      price: 340
+    }
+  };
+
+  return diseaseData[type] || diseaseData.rice_blast;
+}
+
+/**
+ * Frontend error boundary for a vanilla-JS application.
+ *
+ * Browser-level errors and rejected promises are reported to the console and
+ * surfaced through a non-sensitive recovery banner. We never expose stack
+ * traces, source paths, or raw exception messages to end users.
+ */
+function showApplicationError(context) {
+  let banner = document.getElementById('appErrorBoundary');
+
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'appErrorBoundary';
+    banner.setAttribute('role', 'alert');
+    banner.style.cssText =
+      'position:fixed;top:0;left:0;right:0;z-index:99999;padding:12px 18px;' +
+      'background:#7f1d1d;color:#fff;text-align:center;font:600 14px system-ui;';
+    document.body.appendChild(banner);
+  }
+
+  banner.innerHTML =
+    'Something went wrong while loading AgriMart. Please refresh the page and try again. ' +
+    '<button type="button" style="margin-left:10px;padding:5px 10px;cursor:pointer;" ' +
+    'onclick="window.location.reload()">Refresh</button>';
+
+  console.error('[AgriMart Error Boundary]', context);
+}
+
+function installErrorBoundary() {
+  window.addEventListener('error', event => {
+    console.error('[AgriMart Runtime Error]', event.error || event.message);
+    showApplicationError('runtime error');
+  });
+
+  window.addEventListener('unhandledrejection', event => {
+    console.error('[AgriMart Unhandled Promise Rejection]', event.reason);
+    showApplicationError('unhandled promise rejection');
+  });
+}
+
 // INITIALIZATION
 document.addEventListener('DOMContentLoaded', () => {
-  renderFeaturedSeeds();
-  renderProducts();
-  calculateDosage();
-  simulateDiseaseAnalysis('rice_blast');
-  renderProduceMarket();
-  renderOrdersList();
-  updateCartUI();
+  installErrorBoundary();
+
+  try {
+    renderFeaturedSeeds();
+    renderProducts();
+    calculateDosage();
+    simulateDiseaseAnalysis('rice_blast');
+    renderProduceMarket();
+    renderOrdersList();
+    updateCartUI();
+  } catch (error) {
+    // Initialization failures should not leave a blank page with no feedback.
+    console.error('[AgriMart Initialization Error]', error);
+    showApplicationError('initialization');
+  }
 });
+
+// Export pure helpers for the Node.js unit-test suite. This branch is ignored
+// by browsers because `module` is undefined in normal script execution.
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    convertLandToAcres,
+    calculateOrderTotals,
+    getDiseaseInfo
+  };
+}
 
 // TAB SWITCHING
 function switchTab(tabId) {
@@ -616,16 +785,14 @@ function placeOrder() {
   }
 
   const isVillagePool = document.getElementById('villagePoolToggle')?.checked || state.villagePoolActive;
-  let subtotal = 0;
-  let totalSubsidy = 0;
-
-  state.cart.forEach(item => {
-    subtotal += item.mrp * item.qty;
-    totalSubsidy += (item.mrp - item.price) * item.qty;
-  });
-
-  const villageDiscount = isVillagePool ? Math.round((subtotal - totalSubsidy) * 0.18) : 0;
-  const finalPayable = Math.max(0, subtotal - totalSubsidy - villageDiscount);
+  // Keep checkout arithmetic in one pure function so it can be unit tested
+  // without depending on the browser DOM.
+  const {
+    subtotal,
+    totalSubsidy,
+    villageDiscount,
+    finalPayable
+  } = calculateOrderTotals(state.cart, isVillagePool);
   const paymentMode = document.getElementById('paymentMethodSelect').value;
   const newOrderId = `AM-${Math.floor(10000 + Math.random() * 90000)}`;
 
@@ -726,46 +893,8 @@ function simulateDiseaseAnalysis(type) {
   const container = document.getElementById('diagnosisResultCard');
   if (!container) return;
 
-  const diseaseData = {
-    rice_blast: {
-      crop: 'Rice / Paddy',
-      disease: 'Rice Leaf Blast (Magnaporthe oryzae)',
-      severity: 'Moderate - High Spreading Risk',
-      symptoms: 'Spindle-shaped lesions with grayish center on leaves.',
-      solution: 'Tricyclazole 75% WP Spray',
-      productId: 'pest-fungi-1',
-      price: 420
-    },
-    cotton_bollworm: {
-      crop: 'Cotton',
-      disease: 'Pink Bollworm Infestation',
-      severity: 'High Severity',
-      symptoms: 'Bores into cotton bolls causing premature drop.',
-      solution: 'Bio-Neem Organic 10,000 PPM Spray',
-      productId: 'pest-neem-1',
-      price: 340
-    },
-    wheat_rust: {
-      crop: 'Wheat',
-      disease: 'Puccinia Yellow Rust',
-      severity: 'Low - Early Stage',
-      symptoms: 'Yellow stripe pustules on leaf surface.',
-      solution: 'Propiconazole 25% EC Fungicide',
-      productId: 'pest-fungi-1',
-      price: 420
-    },
-    tomato_blight: {
-      crop: 'Tomato',
-      disease: 'Early Blight (Alternaria solani)',
-      severity: 'Moderate',
-      symptoms: 'Concentric rings / target spots on lower leaves.',
-      solution: 'Mancozeb 75% WP Bio Shield',
-      productId: 'pest-neem-1',
-      price: 340
-    }
-  };
-
-  const info = diseaseData[type] || diseaseData.rice_blast;
+  // Keep the diagnostic catalog in one testable lookup function.
+  const info = getDiseaseInfo(type);
 
   container.innerHTML = `
     <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">

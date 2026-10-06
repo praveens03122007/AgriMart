@@ -1,0 +1,9 @@
+{
+  "name": "agrimart",
+  "private": true,
+  "version": "1.0.0",
+  "description": "AgriMart demo application",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  }
+}
